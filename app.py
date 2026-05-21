@@ -6,16 +6,49 @@ from skimage.feature import hog
 from skimage.color import rgb2gray
 import tensorflow as tf
 from tensorflow.keras.applications.efficientnet import preprocess_input
+from groq import Groq
+from dotenv import load_dotenv
+import os
 
+# ── Load environment variables ────────────────────────────────────────────────
+load_dotenv()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Page config 
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Plant Disease Detector",
     page_icon="🌿",
     layout="centered"
 )
 
-# Load all models and assets (cached so they load once) 
+# ── CSS ───────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+.msg-bot {
+    background: #e8f5e9;
+    border-radius: 12px 12px 12px 2px;
+    padding: 10px 14px;
+    font-size: 13px;
+    color: #1b5e20;
+    max-width: 90%;
+    line-height: 1.5;
+    margin-bottom: 8px;
+}
+.msg-user {
+    background: #e3f2fd;
+    border-radius: 12px 12px 2px 12px;
+    padding: 10px 14px;
+    font-size: 13px;
+    color: #0d47a1;
+    max-width: 90%;
+    margin-left: auto;
+    line-height: 1.5;
+    margin-bottom: 8px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Load all models and assets ────────────────────────────────────────────────
 @st.cache_resource
 def load_dl_model():
     return tf.keras.models.load_model("best_model.keras")
@@ -39,34 +72,35 @@ def load_meta():
         "rf_acc":      joblib.load("rf_accuracy.pkl"),
     }
 
-meta    = load_meta()
-assets  = load_classical_assets()
+meta     = load_meta()
+assets   = load_classical_assets()
 dl_model = load_dl_model()
 
 IMG_SIZE = 224
 HOG_SIZE = 64
 
-# HOG feature extraction 
+# ── Session state init ────────────────────────────────────────────────────────
+if "chat_open"     not in st.session_state: st.session_state.chat_open     = False
+if "chat_history"  not in st.session_state: st.session_state.chat_history  = []
+if "last_label"    not in st.session_state: st.session_state.last_label    = None
+if "last_image"    not in st.session_state: st.session_state.last_image    = None
+if "advice_loaded" not in st.session_state: st.session_state.advice_loaded = False
+
+# ── HOG feature extraction ────────────────────────────────────────────────────
 def get_hog_features(pil_img):
-    """Extract HOG features from a PIL image — same pipeline as training."""
+    """Extract HOG features — same pipeline used during training."""
     img  = pil_img.convert("RGB").resize((HOG_SIZE, HOG_SIZE))
     gray = rgb2gray(np.array(img))
-    feat = hog(
-        gray,
-        orientations=9,
-        pixels_per_cell=(8, 8),
-        cells_per_block=(2, 2),
-        block_norm="L2-Hys"
-    )
+    feat = hog(gray, orientations=9, pixels_per_cell=(8, 8),
+               cells_per_block=(2, 2), block_norm="L2-Hys")
     feat_scaled = assets["scaler"].transform([feat])
     feat_pca    = assets["pca"].transform(feat_scaled)
     return feat_pca
 
-# Prediction function 
+# ── Prediction ────────────────────────────────────────────────────────────────
 def predict(pil_img, model_key):
     if model_key == "efficientnet":
-        # Use EfficientNet's own preprocessing — NOT /255
-        # Must match exactly what was used during training
+        # EfficientNet requires its own preprocessing — NOT /255
         img_arr = np.array(pil_img.convert("RGB").resize((IMG_SIZE, IMG_SIZE)))
         img_arr = preprocess_input(img_arr)
         img_arr = np.expand_dims(img_arr, axis=0)
@@ -83,63 +117,96 @@ def predict(pil_img, model_key):
         conf  = probs[idx]
     return label, conf
 
-# Parse class label into plant and condition
+# ── Parse class label into plant and condition ────────────────────────────────
 def parse_label(label):
     parts = label.replace("___", "__").split("__")
     plant = parts[0].replace("_", " ").title() if len(parts) > 0 else "Unknown"
     cond  = parts[1].replace("_", " ").title() if len(parts) > 1 else "Unknown"
     return plant, cond
 
+# ── Groq response ─────────────────────────────────────────────────────────────
+def ask_groq(user_message, disease_label):
+    """
+    Send disease label + user message to Llama 3 via Groq.
+    Groq doesn't support image input — the disease name from our
+    ML model provides all the context needed for accurate advice.
+    """
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        plant, condition = parse_label(disease_label)
+        is_healthy = "healthy" in condition.lower()
 
-# UI Layout
+        system_prompt = f"""You are an expert agricultural assistant and plant pathologist.
+A machine learning model has analyzed a leaf image and predicted the following:
+- Plant: {plant}
+- Condition: {'Healthy' if is_healthy else condition}
+- Full label: {disease_label}
+
+Your role:
+- If diseased: explain what the disease is, how it spreads, treatment steps, and prevention tips
+- If healthy: give care tips for {plant} and describe early warning signs to watch for
+- Be concise, friendly, and practical
+- Use bullet points for treatment or care steps
+- Keep responses under 200 words
+- Always relate your advice specifically to {plant}"""
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_message}
+            ],
+            max_tokens=300,
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+
+    except Exception as e:
+        return f"Sorry, I couldn't get a response right now. Error: {str(e)}"
+
+# ── Initial advice when chat opens ───────────────────────────────────────────
+def get_initial_advice(disease_label):
+    plant, condition = parse_label(disease_label)
+    is_healthy = "healthy" in condition.lower()
+    if is_healthy:
+        msg = f"The ML model detected that this {plant} plant is healthy. Please give me care tips and what symptoms to watch for."
+    else:
+        msg = f"The ML model detected {condition} in this {plant} plant. Please explain this disease and tell me how to treat it."
+    return ask_groq(msg, disease_label)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN UI
+# ─────────────────────────────────────────────────────────────────────────────
 st.title("🌿 Plant Disease Detector")
 st.markdown(
-    "Upload a leaf image and select a model. "
-    "The app will classify the plant disease or confirm it is healthy."
+    "Upload a leaf image, select a model, and get an instant diagnosis. "
+    "Use the **🌿 Plant Advisor** button for expert treatment advice."
 )
-
 st.divider()
 
-#  Model selector 
+# ── Model selector ────────────────────────────────────────────────────────────
 st.subheader("1 · Choose a Model")
 
 MODEL_OPTIONS = {
-    f"🧠 EfficientNetB0  —  Accuracy: {meta['dl_acc']:.2%}  [Deep Learning]":  "efficientnet",
-    f"📐 SVM (HOG)       —  Accuracy: {meta['svm_acc']:.2%}  [Classical ML]":  "svm",
-    f"🌲 Random Forest   —  Accuracy: {meta['rf_acc']:.2%}  [Classical ML]":   "rf",
+    f"🧠 EfficientNetB0  —  Accuracy: {meta['dl_acc']:.2%}  [Deep Learning]": "efficientnet",
+    f"📐 SVM (HOG)       —  Accuracy: {meta['svm_acc']:.2%}  [Classical ML]": "svm",
+    f"🌲 Random Forest   —  Accuracy: {meta['rf_acc']:.2%}  [Classical ML]":  "rf",
 }
 
 chosen_label = st.radio("Select model:", list(MODEL_OPTIONS.keys()), index=0)
 model_key    = MODEL_OPTIONS[chosen_label]
 
-# Description of selected model
 descriptions = {
-    "efficientnet": (
-        "**EfficientNetB0** is a convolutional neural network pretrained on ImageNet "
-        "and fine-tuned on PlantVillage. It learns visual features automatically from pixels. "
-        "Best accuracy but requires more compute."
-    ),
-    "svm": (
-        "**SVM** uses HOG (Histogram of Oriented Gradients) — handcrafted edge and shape "
-        "descriptors — combined with a Support Vector Machine classifier. "
-        "Faster but less accurate than deep learning."
-    ),
-    "rf": (
-        "**Random Forest** also uses HOG features but classifies with an ensemble of "
-        "decision trees voting on the final prediction. "
-        "Fastest but lowest accuracy on this dataset."
-    ),
+    "efficientnet": "**EfficientNetB0** — Deep learning model pretrained on ImageNet, fine-tuned on PlantVillage. Learns visual features automatically from pixels.",
+    "svm":          "**SVM (HOG)** — Extracts handcrafted edge/shape descriptors (HOG) then classifies with a Support Vector Machine. Faster but less accurate.",
+    "rf":           "**Random Forest (HOG)** — Uses HOG features with an ensemble of decision trees. Fastest but lowest accuracy on this dataset.",
 }
 st.info(descriptions[model_key])
-
 st.divider()
 
-# Image upload 
+# ── Image upload ──────────────────────────────────────────────────────────────
 st.subheader("2 · Upload a Leaf Image")
-uploaded = st.file_uploader(
-    "Choose a leaf image (.jpg or .png)",
-    type=["jpg", "jpeg", "png"]
-)
+uploaded = st.file_uploader("Choose a leaf image (.jpg or .png)", type=["jpg", "jpeg", "png"])
 
 if uploaded:
     pil_img = Image.open(uploaded)
@@ -154,7 +221,6 @@ if uploaded:
     plant, condition = parse_label(label)
     is_healthy = "healthy" in condition.lower()
 
-    # Result display
     if is_healthy:
         st.success(f"✅ **{plant}** — Healthy")
     else:
@@ -165,9 +231,78 @@ if uploaded:
     with st.expander("Raw class label"):
         st.code(label)
 
+    # Reset chat if new prediction
+    if st.session_state.last_label != label:
+        st.session_state.last_label    = label
+        st.session_state.last_image    = pil_img
+        st.session_state.chat_history  = []
+        st.session_state.advice_loaded = False
+
     st.divider()
     st.caption(
-        "⚠️ Note: This model was trained on lab-condition images (PlantVillage dataset). "
-        "Predictions on outdoor photos may be less reliable due to background, "
-        "lighting, and angle differences — a known limitation called domain shift."
+        "⚠️ Note: Trained on lab-condition images (PlantVillage). "
+        "Outdoor photos may give less reliable results due to domain shift."
     )
+
+# ── Plant Advisor ─────────────────────────────────────────────────────────────
+if st.session_state.last_label and GROQ_API_KEY:
+
+    st.divider()
+
+    btn_label = "🌿 Close Plant Advisor" if st.session_state.chat_open else "🌿 Open Plant Advisor"
+    if st.button(btn_label, use_container_width=True):
+        st.session_state.chat_open = not st.session_state.chat_open
+        st.rerun()
+
+    if st.session_state.chat_open:
+        st.markdown("### 🌿 Plant Advisor")
+        st.caption("Powered by Llama 3.3 70B via Groq — ask anything about your plant")
+
+        # Load initial advice only on first open
+        if not st.session_state.advice_loaded:
+            with st.spinner("🌿 Analyzing your plant …"):
+                initial_advice = get_initial_advice(st.session_state.last_label)
+            st.session_state.chat_history.append({
+                "role": "bot",
+                "text": initial_advice
+            })
+            st.session_state.advice_loaded = True
+            st.rerun()
+
+        # Display chat history
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "bot":
+                st.markdown(f"<div class='msg-bot'>{msg['text']}</div>",
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div class='msg-user'>{msg['text']}</div>",
+                            unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # User input
+        with st.form("chat_form", clear_on_submit=True):
+            user_input = st.text_input(
+                "Ask something about this plant …",
+                placeholder="e.g. What pesticide should I use?"
+            )
+            submitted = st.form_submit_button("Send ➤")
+
+        if submitted and user_input.strip():
+            st.session_state.chat_history.append({
+                "role": "user",
+                "text": user_input
+            })
+            with st.spinner("Thinking …"):
+                reply = ask_groq(
+                    user_input,
+                    st.session_state.last_label
+                )
+            st.session_state.chat_history.append({
+                "role": "bot",
+                "text": reply
+            })
+            st.rerun()
+
+elif not GROQ_API_KEY:
+    st.warning("⚠️ GROQ_API_KEY not found in .env file — chat advisor disabled.")
