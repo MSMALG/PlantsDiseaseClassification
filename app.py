@@ -10,18 +10,18 @@ from groq import Groq
 from dotenv import load_dotenv
 import os
 
-# ── Load environment variables ────────────────────────────────────────────────
+# Load environment variables
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# ── Page config ───────────────────────────────────────────────────────────────
+# Page config 
 st.set_page_config(
     page_title="Plant Disease Detector",
     page_icon="🌿",
     layout="centered"
 )
 
-# ── CSS ───────────────────────────────────────────────────────────────────────
+# CSS 
 st.markdown("""
 <style>
 .msg-bot {
@@ -48,7 +48,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Load all models and assets ────────────────────────────────────────────────
+# Load all models and assets with caching to speed up app performance
 @st.cache_resource
 def load_dl_model():
     return tf.keras.models.load_model("best_model.keras")
@@ -79,14 +79,14 @@ dl_model = load_dl_model()
 IMG_SIZE = 224
 HOG_SIZE = 64
 
-# ── Session state init ────────────────────────────────────────────────────────
+# Session state init 
 if "chat_open"     not in st.session_state: st.session_state.chat_open     = False
 if "chat_history"  not in st.session_state: st.session_state.chat_history  = []
 if "last_label"    not in st.session_state: st.session_state.last_label    = None
 if "last_image"    not in st.session_state: st.session_state.last_image    = None
 if "advice_loaded" not in st.session_state: st.session_state.advice_loaded = False
 
-# ── HOG feature extraction ────────────────────────────────────────────────────
+# HOG feature extraction 
 def get_hog_features(pil_img):
     """Extract HOG features — same pipeline used during training."""
     img  = pil_img.convert("RGB").resize((HOG_SIZE, HOG_SIZE))
@@ -97,10 +97,11 @@ def get_hog_features(pil_img):
     feat_pca    = assets["pca"].transform(feat_scaled)
     return feat_pca
 
-# ── Prediction ────────────────────────────────────────────────────────────────
+# Prediction function for both DL and classical models
 def predict(pil_img, model_key):
     if model_key == "efficientnet":
-        # EfficientNet requires its own preprocessing — NOT /255
+        # EfficientNet requires its own preprocessing 
+        # NOT dividing by 255 as preprocess_input handles that internally
         img_arr = np.array(pil_img.convert("RGB").resize((IMG_SIZE, IMG_SIZE)))
         img_arr = preprocess_input(img_arr)
         img_arr = np.expand_dims(img_arr, axis=0)
@@ -117,14 +118,14 @@ def predict(pil_img, model_key):
         conf  = probs[idx]
     return label, conf
 
-# ── Parse class label into plant and condition ────────────────────────────────
+#  Parse class label into plant and condition 
 def parse_label(label):
     parts = label.replace("___", "__").split("__")
     plant = parts[0].replace("_", " ").title() if len(parts) > 0 else "Unknown"
     cond  = parts[1].replace("_", " ").title() if len(parts) > 1 else "Unknown"
     return plant, cond
 
-# ── Groq response ─────────────────────────────────────────────────────────────
+#  Groq response 
 def ask_groq(user_message, disease_label):
     """
     Send disease label + user message to Llama 3 via Groq.
@@ -164,7 +165,7 @@ Your role:
     except Exception as e:
         return f"Sorry, I couldn't get a response right now. Error: {str(e)}"
 
-# ── Initial advice when chat opens ───────────────────────────────────────────
+#  Initial advice when chat opens 
 def get_initial_advice(disease_label):
     plant, condition = parse_label(disease_label)
     is_healthy = "healthy" in condition.lower()
@@ -174,9 +175,7 @@ def get_initial_advice(disease_label):
         msg = f"The ML model detected {condition} in this {plant} plant. Please explain this disease and tell me how to treat it."
     return ask_groq(msg, disease_label)
 
-# ─────────────────────────────────────────────────────────────────────────────
 # MAIN UI
-# ─────────────────────────────────────────────────────────────────────────────
 st.title("🌿 Plant Disease Detector")
 st.markdown(
     "Upload a leaf image, select a model, and get an instant diagnosis. "
@@ -184,7 +183,7 @@ st.markdown(
 )
 st.divider()
 
-# ── Model selector ────────────────────────────────────────────────────────────
+#  Model selector 
 st.subheader("1 · Choose a Model")
 
 MODEL_OPTIONS = {
@@ -204,7 +203,7 @@ descriptions = {
 st.info(descriptions[model_key])
 st.divider()
 
-# ── Image upload ──────────────────────────────────────────────────────────────
+#  Image upload 
 st.subheader("2 · Upload a Leaf Image")
 uploaded = st.file_uploader("Choose a leaf image (.jpg or .png)", type=["jpg", "jpeg", "png"])
 
@@ -244,7 +243,7 @@ if uploaded:
         "Outdoor photos may give less reliable results due to domain shift."
     )
 
-# ── Plant Advisor ─────────────────────────────────────────────────────────────
+#  Plant Advisor 
 if st.session_state.last_label and GROQ_API_KEY:
 
     st.divider()
