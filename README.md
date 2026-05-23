@@ -111,7 +111,7 @@ The deployment uses a modified version of `app.py` that fetches `rf_model.pkl` f
 
 ---
 
-## 👥 Team
+## Team
 
 | Name | Student ID |
 |---|---|
