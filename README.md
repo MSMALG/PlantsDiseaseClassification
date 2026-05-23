@@ -41,7 +41,7 @@ pip install -r requirements.txt
 
 All trained model artifacts are available on Google Drive. Download them and place them in the same directory as `app.py`:
 
- **[Download Model Files from Google Drive]([https://drive.google.com/YOUR_FOLDER_LINK](https://drive.google.com/drive/folders/1hA-YSZWCgHWRSMeGT8STh4bC8CUGFkN_?usp=sharing))**
+ **[Download Model Files from Google Drive](https://drive.google.com/YOUR_FOLDER_LINK](https://drive.google.com/drive/folders/1hA-YSZWCgHWRSMeGT8STh4bC8CUGFkN_?usp=sharing)**
 
 The following files are required:
 
